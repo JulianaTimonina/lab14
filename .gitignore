@@ -1,0 +1,139 @@
+# Игнорируемые файлы и папки для системы анализа энергопотребления
+
+# Бинарные файлы и исполняемые файлы
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.bin
+*.out
+
+# Файлы Go
+go-collector/collector
+go-collector/*.test
+go-collector/coverage.out
+go-collector/coverage.html
+
+# Файлы Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+.pytest_cache/
+.coverage
+.coverage.*
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+.hypothesis/
+.pytest_cache/
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pyre/
+.pytype/
+
+# Файлы Rust
+rust-validation/target/
+**/*.rs.bk
+rust-validation/Cargo.lock
+
+# Файлы IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Файлы окружения и конфигурации с секретами
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+.secrets/
+config/secrets.yaml
+
+# Логи
+*.log
+logs/
+*.pid
+*.pid.lock
+
+# Временные файлы
+tmp/
+temp/
+*.tmp
+*.temp
+
+# Файлы данных и базы данных
+*.db
+*.sqlite
+*.sqlite3
+data/
+*.csv
+*.parquet
+*.arrow
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# Kubernetes
+k8s/secrets/
+k8s/*-secrets.yaml
+
+# Результаты бенчмарков и тестов
+benchmarks/results/
+benchmarks/go-vs-python/results/
+benchmarks/arrow-vs-json/results/
+*.bench
+*.profile
+
+# Системные файлы
+.directory
+*.bak
+*.backup
+*.old
+
+# Файлы сборки
+dist/
+build/
+out/
+release/
+
+# Файлы зависимостей (кроме lock файлов, которые нужно коммитить)
+node_modules/
+vendor/
+go-collector/vendor/
+
+# Исключения (файлы, которые нужно коммитить)
+!go.mod
+!go.sum
+!Cargo.toml
+!requirements.txt
+!docker-compose.yml
+!k8s/*.yaml
+!kafka-setup/*.yml
+!kafka-setup/*.sh

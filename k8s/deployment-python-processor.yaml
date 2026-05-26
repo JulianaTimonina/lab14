@@ -1,0 +1,237 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: python-processor
+  namespace: energy-monitoring
+  labels:
+    app: python-processor
+    component: data-processing
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: python-processor
+  template:
+    metadata:
+      labels:
+        app: python-processor
+        component: data-processing
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      containers:
+      - name: python-processor
+        image: energy-monitoring/python-processor:latest
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: http
+        - containerPort: 8001
+          name: metrics
+        env:
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
+        - name: POD_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: DATABASE_URL
+          value: "postgresql://postgres:$(POSTGRES_PASSWORD)@timescaledb.energy-monitoring.svc.cluster.local:5432/energy"
+        - name: KAFKA_BOOTSTRAP_SERVERS
+          value: "kafka.energy-monitoring.svc.cluster.local:9092"
+        - name: ARROW_FLIGHT_SERVER
+          value: "go-collector.energy-monitoring.svc.cluster.local:8815"
+        - name: WINDOW_SIZE_SECONDS
+          value: "300"
+        - name: SLIDE_INTERVAL_SECONDS
+          value: "60"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: POSTGRES_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: database-secrets
+              key: postgres-password
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8000
+          initialDelaySeconds: 60
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: 8000
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /etc/python-processor
+          readOnly: true
+        - name: shared-data
+          mountPath: /data
+      initContainers:
+      - name: init-database
+        image: busybox:latest
+        command: ['sh', '-c', 'until nc -z timescaledb.energy-monitoring.svc.cluster.local 5432; do echo "Waiting for database..."; sleep 2; done']
+      volumes:
+      - name: config
+        configMap:
+          name: python-processor-config
+      - name: shared-data
+        emptyDir: {}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - python-processor
+              topologyKey: kubernetes.io/hostname
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: python-processor
+  namespace: energy-monitoring
+  labels:
+    app: python-processor
+    component: data-processing
+spec:
+  selector:
+    app: python-processor
+  ports:
+  - name: http
+    port: 8000
+    targetPort: 8000
+  - name: metrics
+    port: 8001
+    targetPort: 8001
+  type: ClusterIP
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: python-processor-hpa
+  namespace: energy-monitoring
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: python-processor
+  minReplicas: 1
+  maxReplicas: 5
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 60
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Pods
+    pods:
+      metric:
+        name: kafka_lag_messages
+      target:
+        type: AverageValue
+        averageValue: 5000
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 60
+      - type: Pods
+        value: 2
+        periodSeconds: 60
+      selectPolicy: Max
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: python-processor-config
+  namespace: energy-monitoring
+data:
+  config.yaml: |
+    database:
+      host: "timescaledb.energy-monitoring.svc.cluster.local"
+      port: 5432
+      name: "energy"
+      user: "postgres"
+      poolSize: 10
+      timeout: 30
+    
+    kafka:
+      bootstrapServers: "kafka.energy-monitoring.svc.cluster.local:9092"
+      groupId: "python-processor"
+      topics:
+        raw: "meter-readings-raw"
+        aggregated: "meter-readings-aggregated"
+        errors: "meter-readings-validation-errors"
+      autoOffsetReset: "earliest"
+      enableAutoCommit: true
+    
+    arrow:
+      enabled: true
+      host: "go-collector.energy-monitoring.svc.cluster.local"
+      port: 8815
+      ticketData: "aggregated-data"
+    
+    processing:
+      windowSizeSeconds: 300
+      slideIntervalSeconds: 60
+      windowType: "sliding"
+      maxWindowAgeSeconds: 3600
+      batchSize: 1000
+      processingTimeout: 30
+    
+    validation:
+      enabled: true
+      rustValidation: false  # пока не интегрировано
+    
+    metrics:
+      enabled: true
+      port: 8001
+      path: "/metrics"
+    
+    api:
+      enabled: true
+      port: 8000
+      host: "0.0.0.0"
+    
+    logging:
+      level: "info"
+      format: "json"
+      file: "/var/log/python-processor.log"

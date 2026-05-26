@@ -1,0 +1,145 @@
+version: '3.8'
+
+services:
+  # etcd для координации сборщиков
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.0
+    container_name: etcd
+    environment:
+      - ETCD_NAME=etcd0
+      - ETCD_DATA_DIR=/etcd-data
+      - ETCD_LISTEN_CLIENT_URLS=http://0.0.0.0:2379
+      - ETCD_ADVERTISE_CLIENT_URLS=http://etcd:2379
+      - ETCD_INITIAL_ADVERTISE_PEER_URLS=http://etcd:2380
+      - ETCD_LISTEN_PEER_URLS=http://0.0.0.0:2380
+      - ETCD_INITIAL_CLUSTER=etcd0=http://etcd:2380
+      - ETCD_INITIAL_CLUSTER_TOKEN=etcd-cluster
+      - ETCD_INITIAL_CLUSTER_STATE=new
+    ports:
+      - "2379:2379"
+      - "2380:2380"
+    volumes:
+      - etcd-data:/etcd-data
+    networks:
+      - energy-net
+
+  # Kafka для потоковой передачи
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.4.0
+    container_name: zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    networks:
+      - energy-net
+
+  kafka:
+    image: confluentinc/cp-kafka:7.4.0
+    container_name: kafka
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+    ports:
+      - "9092:9092"
+    networks:
+      - energy-net
+
+  # PostgreSQL с TimescaleDB для хранения данных
+  timescaledb:
+    image: timescale/timescaledb:latest-pg14
+    container_name: timescaledb
+    environment:
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=energy
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescaledb-data:/var/lib/postgresql/data
+    networks:
+      - energy-net
+
+  # Prometheus для мониторинга
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    ports:
+      - "9090:9090"
+    networks:
+      - energy-net
+
+  # Grafana для визуализации
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./monitoring/grafana-dashboards:/etc/grafana/provisioning/dashboards
+    ports:
+      - "3000:3000"
+    networks:
+      - energy-net
+
+  # Python-обработчик (пример)
+  python-processor:
+    build:
+      context: ./python-processor
+      dockerfile: Dockerfile
+    container_name: python-processor
+    depends_on:
+      - kafka
+      - timescaledb
+    environment:
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/energy
+    volumes:
+      - ./python-processor:/app
+    networks:
+      - energy-net
+
+  # Веб-дашборд на Streamlit
+  web-dashboard:
+    build:
+      context: ./web-dashboard
+      dockerfile: Dockerfile
+    container_name: web-dashboard
+    depends_on:
+      - timescaledb
+    ports:
+      - "8501:8501"
+    volumes:
+      - ./web-dashboard:/app
+    networks:
+      - energy-net
+
+volumes:
+  etcd-data:
+  timescaledb-data:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  energy-net:
+    driver: bridge

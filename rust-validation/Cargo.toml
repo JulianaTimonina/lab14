@@ -1,0 +1,23 @@
+[package]
+name = "energy-validation"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "energy_validation"
+crate-type = ["cdylib", "rlib"]  # cdylib для C, rlib для Rust
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+# Для Python bindings (опционально)
+pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
+
+[features]
+default = []
+python = ["pyo3"]
+
+[build-dependencies]
+cbindgen = "0.26"  # для генерации C заголовков
