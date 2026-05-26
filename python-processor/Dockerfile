@@ -21,19 +21,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
-# Этап 2: Сборка Rust библиотеки (опционально)
-FROM rust:1.70-slim AS rust-builder
-
-WORKDIR /app
-
-# Копирование Rust проекта
-COPY rust-validation/Cargo.toml rust-validation/Cargo.lock ./rust-validation/
-COPY rust-validation/src ./rust-validation/src
-
-WORKDIR /app/rust-validation
-RUN cargo build --release
-
-# Этап 3: Финальный образ
+# Этап 2: Финальный образ
 FROM python:3.11-slim
 
 # Установка системных зависимостей времени выполнения
@@ -51,9 +39,6 @@ WORKDIR /app
 COPY --from=builder /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
-# Копирование Rust библиотеки (опционально)
-COPY --from=rust-builder /app/rust-validation/target/release/libenergy_validation.so /usr/local/lib/
-
 # Копирование исходного кода Python
 COPY . .
 
@@ -65,8 +50,10 @@ RUN mkdir -p /var/log/python-processor /data && \
 USER appuser
 
 # Экспорт портов
-EXPOSE 8000  # HTTP API
-EXPOSE 8001  # Prometheus метрики
+# HTTP API
+EXPOSE 8000
+# Prometheus метрики
+EXPOSE 8001
 
 # Переменные окружения по умолчанию
 ENV PYTHONUNBUFFERED=1 \

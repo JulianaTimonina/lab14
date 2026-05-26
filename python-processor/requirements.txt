@@ -1,7 +1,6 @@
 pyarrow>=14.0.0
 confluent-kafka>=2.3.0
 psycopg2-binary>=2.9.9
-timescaledb>=2.13.0
 pandas>=2.0.0
 numpy>=1.24.0
 fastapi>=0.104.0
@@ -12,4 +11,3 @@ plotly>=5.18.0
 matplotlib>=3.8.0
 pydantic>=2.5.0
 python-multipart>=0.0.6
-pyo3>=0.20.0; sys_platform != "win32"  # для интеграции с Rust
