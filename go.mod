@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/apache/arrow/go/v14 v14.0.0
+	github.com/confluentinc/confluent-kafka-go/v2 v2.8.0
 	go.etcd.io/etcd/client/v3 v3.6.11
 	google.golang.org/grpc v1.79.3
 )

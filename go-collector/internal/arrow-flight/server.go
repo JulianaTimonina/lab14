@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"time"
 
 	"github.com/apache/arrow/go/v14/arrow"
 	"github.com/apache/arrow/go/v14/arrow/array"
@@ -191,7 +192,5 @@ func (s *ArrowFlightServer) ConvertAggregatedDataToRecord(data models.Aggregated
 // SendAggregatedData отправляет агрегированные данные через Flight RPC
 // (это клиентская функция, но размещена здесь для удобства)
 func SendAggregatedData(data models.AggregatedData, flightServerURL string) error {
-	// TODO: реализовать клиент для отправки данных на другой сервер
-	// Это будет использоваться в сборщике для отправки агрегированных данных
-	return nil
+	return SendAggregatedDataToServer(data, flightServerURL)
 }

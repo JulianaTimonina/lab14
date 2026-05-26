@@ -41,6 +41,7 @@ class EnergyProcessor:
         
         # Инициализация компонентов
         self.arrow_client = None
+        self.arrow_server = None
         self.kafka_consumer = None
         self.window_processor = None
         self.db_connection = None
@@ -64,6 +65,19 @@ class EnergyProcessor:
             )
             await self.arrow_client.connect()
             logger.info("Arrow Flight client initialized")
+        
+        # Инициализация Arrow Flight сервера (для приёма данных от Go-сборщика)
+        if self.config.get('arrow_server_enabled', False):
+            # Импортируем здесь, чтобы избежать циклических зависимостей
+            from arrow_server import AggregatedDataFlightServer
+            arrow_server_host = self.config.get('arrow_server_host', 'localhost')
+            arrow_server_port = self.config.get('arrow_server_port', 8815)
+            self.arrow_server = AggregatedDataFlightServer(
+                host=arrow_server_host,
+                port=arrow_server_port,
+                processor=self
+            )
+            logger.info(f"Arrow Flight server initialized on {arrow_server_host}:{arrow_server_port}")
         
         # Инициализация Kafka потребителя
         if self.config.get('kafka_enabled', True):
@@ -139,6 +153,10 @@ class EnergyProcessor:
         
         if self.arrow_client:
             tasks.append(asyncio.create_task(self._receive_arrow_data()))
+        
+        if self.arrow_server:
+            # Запуск сервера Arrow Flight в фоне
+            tasks.append(asyncio.create_task(self.arrow_server.serve()))
         
         if self.kafka_consumer:
             tasks.append(asyncio.create_task(self._receive_kafka_data()))
@@ -371,6 +389,9 @@ def load_config() -> Dict:
         'arrow_enabled': os.getenv('ARROW_ENABLED', 'True').lower() in ('true', '1', 'yes'),
         'arrow_host': os.getenv('ARROW_HOST', 'localhost'),
         'arrow_port': int(os.getenv('ARROW_PORT', '8815')),
+        'arrow_server_enabled': os.getenv('ARROW_SERVER_ENABLED', 'False').lower() in ('true', '1', 'yes'),
+        'arrow_server_host': os.getenv('ARROW_SERVER_HOST', 'localhost'),
+        'arrow_server_port': int(os.getenv('ARROW_SERVER_PORT', '8815')),
         'kafka_enabled': os.getenv('KAFKA_ENABLED', 'True').lower() in ('true', '1', 'yes'),
         'kafka_bootstrap_servers': kafka_bootstrap_servers,
         'kafka_topics': os.getenv('KAFKA_TOPICS', 'meter-readings-raw,meter-readings-aggregated').split(','),

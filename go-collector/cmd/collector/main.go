@@ -12,14 +12,20 @@ import (
 	"time"
 
 	"energy-monitoring-system/go-collector/internal/aggregation"
+	"energy-monitoring-system/go-collector/internal/arrowflight"
 	"energy-monitoring-system/go-collector/internal/etcd-coordination"
+	"energy-monitoring-system/go-collector/internal/kafka"
 	"energy-monitoring-system/go-collector/pkg/models"
 )
 
 const (
-	etcdEndpoints = "http://localhost:2379"
-	meterEmulatorURL = "http://localhost:8080"
-	totalShards = 100
+	etcdEndpoints        = "http://localhost:2379"
+	meterEmulatorURL     = "http://localhost:8080"
+	totalShards          = 100
+	kafkaBootstrap       = "localhost:9092"
+	kafkaTopicRaw        = "meter-readings-raw"
+	kafkaTopicAggregated = "meter-readings-aggregated"
+	arrowFlightServer    = "localhost:8815"
 )
 
 func main() {
@@ -60,6 +66,15 @@ func main() {
 	windowSize := 30 * time.Second
 	aggregator := aggregation.NewWindowAggregator(windowSize)
 
+	// Инициализируем Kafka producer для агрегированных данных
+	kafkaProducer, err := kafka.NewKafkaProducer(kafkaBootstrap, kafkaTopicAggregated)
+	if err != nil {
+		log.Printf("Warning: failed to create Kafka producer: %v. Continuing without Kafka.", err)
+	} else {
+		defer kafkaProducer.Close()
+		log.Println("Kafka producer initialized successfully")
+	}
+
 	// Запускаем сбор данных
 	dataChan := make(chan models.MeterReading, 1000)
 	go collectData(ctx, assignedShards, dataChan)
@@ -68,7 +83,7 @@ func main() {
 	go processData(ctx, dataChan, aggregator)
 
 	// Запускаем отправку агрегированных данных
-	go sendAggregatedData(ctx, aggregator)
+	go sendAggregatedData(ctx, aggregator, kafkaProducer)
 
 	// Отслеживаем изменения в назначении шардов
 	coordinator.WatchShardsChanges(ctx, func(shards []string) {
@@ -161,7 +176,7 @@ func processData(ctx context.Context, dataChan <-chan models.MeterReading, aggre
 }
 
 // sendAggregatedData отправляет агрегированные данные
-func sendAggregatedData(ctx context.Context, aggregator *aggregation.WindowAggregator) {
+func sendAggregatedData(ctx context.Context, aggregator *aggregation.WindowAggregator, kafkaProducer *kafka.KafkaProducer) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -173,20 +188,38 @@ func sendAggregatedData(ctx context.Context, aggregator *aggregation.WindowAggre
 				aggregated.WindowEnd.Format(time.RFC3339),
 				len(aggregated.Aggregates))
 
-			// Здесь будет вызов sendViaArrowFlight(aggregated) или sendViaKafka(aggregated)
+			// Отправляем через Kafka, если producer доступен
+			if kafkaProducer != nil {
+				if err := kafkaProducer.SendAggregatedData(aggregated); err != nil {
+					log.Printf("Failed to send aggregated data to Kafka: %v", err)
+				} else {
+					log.Printf("Successfully sent aggregated data to Kafka")
+				}
+			}
+
+			// Также можно отправить через Arrow Flight (опционально)
 			sendViaArrowFlight(aggregated)
 		}
 	}
 }
 
-// sendViaArrowFlight отправляет данные через Apache Arrow Flight (заглушка)
+// sendViaArrowFlight отправляет данные через Apache Arrow Flight
 func sendViaArrowFlight(data models.AggregatedData) {
-	// TODO: реализовать отправку через Arrow Flight
-	log.Printf("Would send aggregated data via Arrow Flight: %v", data)
-}
+	// Проверяем, включена ли отправка через Arrow Flight
+	if os.Getenv("USE_ARROW_FLIGHT") == "false" {
+		return
+	}
 
-// sendViaKafka отправляет данные через Kafka (заглушка)
-func sendViaKafka(data models.AggregatedData) {
-	// TODO: реализовать отправку через Kafka
-	log.Printf("Would send aggregated data via Kafka: %v", data)
+	serverAddr := os.Getenv("ARROW_FLIGHT_SERVER")
+	if serverAddr == "" {
+		serverAddr = fmt.Sprintf("localhost:%d", 8815)
+	}
+
+	// Используем функцию SendAggregatedData из пакета arrowflight
+	err := arrowflight.SendAggregatedData(data, serverAddr)
+	if err != nil {
+		log.Printf("Failed to send aggregated data via Arrow Flight: %v", err)
+	} else {
+		log.Printf("Successfully sent aggregated data via Arrow Flight to %s", serverAddr)
+	}
 }
