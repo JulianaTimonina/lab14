@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]  # cdylib для C, rlib для Rust
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "1.0"
+chrono = "0.4"
+libc = "0.2"
 
 # Для Python bindings (опционально)
 pyo3 = { version = "0.20", features = ["extension-module"], optional = true }
