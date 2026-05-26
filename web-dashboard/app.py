@@ -39,19 +39,31 @@ class EnergyDashboard:
         self.cache_ttl = 30  # секунды
         
     def connect_database(self):
-        """Подключение к базе данных."""
+        """Подключение к базе данных с приоритетом переменных окружения."""
+        import os
         try:
+            # Используем переменные окружения как основной источник, secrets.toml как fallback
+            host = os.environ.get("DB_HOST") or st.secrets.get("DB_HOST", "localhost")
+            port = int(os.environ.get("DB_PORT") or st.secrets.get("DB_PORT", 5432))
+            database = os.environ.get("DB_NAME") or st.secrets.get("DB_NAME", "energy")
+            user = os.environ.get("DB_USER") or st.secrets.get("DB_USER", "postgres")
+            password = os.environ.get("DB_PASSWORD") or st.secrets.get("DB_PASSWORD", "password")
+            
+            logger.info(f"Attempting to connect to database with: host={host}, port={port}, db={database}, user={user}")
+            
             self.db_connection = psycopg2.connect(
-                host=st.secrets.get("DB_HOST", "localhost"),
-                port=st.secrets.get("DB_PORT", 5432),
-                database=st.secrets.get("DB_NAME", "energy"),
-                user=st.secrets.get("DB_USER", "postgres"),
-                password=st.secrets.get("DB_PASSWORD", "password")
+                host=host,
+                port=port,
+                database=database,
+                user=user,
+                password=password
             )
-            logger.info("Connected to database")
+            logger.info("Connected to database successfully")
             return True
         except Exception as e:
             logger.error(f"Failed to connect to database: {e}")
+            logger.error(f"Environment variables: DB_HOST={os.environ.get('DB_HOST')}, DB_PORT={os.environ.get('DB_PORT')}, DB_NAME={os.environ.get('DB_NAME')}")
+            logger.error(f"Secrets available: {list(st.secrets.keys()) if hasattr(st.secrets, 'keys') else 'No secrets'}")
             return False
     
     def get_recent_readings(self, limit: int = 1000) -> pd.DataFrame:

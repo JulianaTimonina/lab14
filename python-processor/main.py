@@ -10,6 +10,8 @@ import asyncio
 import logging
 import signal
 import sys
+import os
+import traceback
 from typing import Dict, List, Optional
 from datetime import datetime, timedelta
 
@@ -94,7 +96,7 @@ class EnergyProcessor:
             with self.db_connection.cursor() as cursor:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS meter_readings (
-                        id SERIAL PRIMARY KEY,
+                        id BIGSERIAL,
                         meter_id VARCHAR(50) NOT NULL,
                         timestamp TIMESTAMPTZ NOT NULL,
                         power DOUBLE PRECISION NOT NULL,
@@ -103,7 +105,7 @@ class EnergyProcessor:
                     );
                     
                     CREATE TABLE IF NOT EXISTS aggregated_readings (
-                        id SERIAL PRIMARY KEY,
+                        id BIGSERIAL,
                         window_start TIMESTAMPTZ NOT NULL,
                         window_end TIMESTAMPTZ NOT NULL,
                         meter_id VARCHAR(50) NOT NULL,
@@ -124,6 +126,7 @@ class EnergyProcessor:
             logger.info("Database connection established and tables created")
         except Exception as e:
             logger.error(f"Failed to initialize database: {e}")
+            logger.error(traceback.format_exc())
             raise
     
     async def start(self):
@@ -353,22 +356,32 @@ class EnergyProcessor:
         logger.info("Energy Processor stopped")
 
 def load_config() -> Dict:
-    """Загрузка конфигурации."""
+    """Загрузка конфигурации из переменных окружения с fallback на значения по умолчанию."""
+    # Параметры базы данных
+    db_host = os.getenv('DB_HOST', 'localhost')
+    db_port = int(os.getenv('DB_PORT', '5432'))
+    db_name = os.getenv('DB_NAME', 'energy')
+    db_user = os.getenv('DB_USER', 'postgres')
+    db_password = os.getenv('DB_PASSWORD', 'password')
+    
+    # Параметры Kafka
+    kafka_bootstrap_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+    
     return {
-        'arrow_enabled': True,
-        'arrow_host': 'localhost',
-        'arrow_port': 8815,
-        'kafka_enabled': True,
-        'kafka_bootstrap_servers': 'localhost:9092',
-        'kafka_topics': ['meter-readings-raw', 'meter-readings-aggregated'],
-        'kafka_group_id': 'energy-processor',
-        'window_size_seconds': 300,
-        'slide_interval_seconds': 60,
-        'db_host': 'localhost',
-        'db_port': 5432,
-        'db_name': 'energy',
-        'db_user': 'postgres',
-        'db_password': 'password'
+        'arrow_enabled': os.getenv('ARROW_ENABLED', 'True').lower() in ('true', '1', 'yes'),
+        'arrow_host': os.getenv('ARROW_HOST', 'localhost'),
+        'arrow_port': int(os.getenv('ARROW_PORT', '8815')),
+        'kafka_enabled': os.getenv('KAFKA_ENABLED', 'True').lower() in ('true', '1', 'yes'),
+        'kafka_bootstrap_servers': kafka_bootstrap_servers,
+        'kafka_topics': os.getenv('KAFKA_TOPICS', 'meter-readings-raw,meter-readings-aggregated').split(','),
+        'kafka_group_id': os.getenv('KAFKA_GROUP_ID', 'energy-processor'),
+        'window_size_seconds': int(os.getenv('WINDOW_SIZE_SECONDS', '300')),
+        'slide_interval_seconds': int(os.getenv('SLIDE_INTERVAL_SECONDS', '60')),
+        'db_host': db_host,
+        'db_port': db_port,
+        'db_name': db_name,
+        'db_user': db_user,
+        'db_password': db_password
     }
 
 async def main():

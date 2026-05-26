@@ -113,6 +113,11 @@ services:
     environment:
       - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
       - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/energy
+      - DB_HOST=timescaledb
+      - DB_PORT=5432
+      - DB_NAME=energy
+      - DB_USER=postgres
+      - DB_PASSWORD=password
     networks:
       - energy-net
 
@@ -124,6 +129,13 @@ services:
     container_name: web-dashboard
     depends_on:
       - timescaledb
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@timescaledb:5432/energy
+      - DB_HOST=timescaledb
+      - DB_PORT=5432
+      - DB_NAME=energy
+      - DB_USER=postgres
+      - DB_PASSWORD=password
     ports:
       - "8501:8501"
     networks:
