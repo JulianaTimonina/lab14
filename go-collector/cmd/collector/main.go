@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
@@ -29,11 +30,16 @@ const (
 )
 
 func main() {
+	// Парсинг флагов командной строки
+	var transport string
+	flag.StringVar(&transport, "transport", "kafka", "Transport to use for sending aggregated data (kafka, arrow, both)")
+	flag.Parse()
+
 	// Генерируем ID сборщика (можно использовать hostname + pid)
 	hostname, _ := os.Hostname()
 	collectorID := fmt.Sprintf("%s-%d", hostname, os.Getpid())
 
-	log.Printf("Starting collector %s", collectorID)
+	log.Printf("Starting collector %s with transport=%s", collectorID, transport)
 
 	// Инициализируем координатор etcd
 	coordinator, err := etcdcoordination.NewCoordinator([]string{etcdEndpoints}, collectorID)
@@ -66,13 +72,30 @@ func main() {
 	windowSize := 30 * time.Second
 	aggregator := aggregation.NewWindowAggregator(windowSize)
 
-	// Инициализируем Kafka producer для агрегированных данных
-	kafkaProducer, err := kafka.NewKafkaProducer(kafkaBootstrap, kafkaTopicAggregated)
-	if err != nil {
-		log.Printf("Warning: failed to create Kafka producer: %v. Continuing without Kafka.", err)
-	} else {
-		defer kafkaProducer.Close()
-		log.Println("Kafka producer initialized successfully")
+	// Инициализируем транспорты в зависимости от флага
+	var kafkaProducer *kafka.KafkaProducer
+	var arrowClient *arrowflight.ArrowFlightClient
+
+	if transport == "kafka" || transport == "both" {
+		// Инициализируем Kafka producer для агрегированных данных
+		kafkaProducer, err = kafka.NewKafkaProducer(kafkaBootstrap, kafkaTopicAggregated)
+		if err != nil {
+			log.Printf("Warning: failed to create Kafka producer: %v. Continuing without Kafka.", err)
+		} else {
+			defer kafkaProducer.Close()
+			log.Println("Kafka producer initialized successfully")
+		}
+	}
+
+	if transport == "arrow" || transport == "both" {
+		// Инициализируем Arrow Flight клиент
+		arrowClient, err = arrowflight.NewArrowFlightClient(arrowFlightServer, 10*time.Second)
+		if err != nil {
+			log.Printf("Warning: failed to create Arrow Flight client: %v. Continuing without Arrow.", err)
+		} else {
+			defer arrowClient.Close()
+			log.Println("Arrow Flight client initialized successfully")
+		}
 	}
 
 	// Запускаем сбор данных
@@ -83,7 +106,7 @@ func main() {
 	go processData(ctx, dataChan, aggregator)
 
 	// Запускаем отправку агрегированных данных
-	go sendAggregatedData(ctx, aggregator, kafkaProducer)
+	go sendAggregatedData(ctx, aggregator, kafkaProducer, arrowClient)
 
 	// Отслеживаем изменения в назначении шардов
 	coordinator.WatchShardsChanges(ctx, func(shards []string) {
@@ -176,7 +199,7 @@ func processData(ctx context.Context, dataChan <-chan models.MeterReading, aggre
 }
 
 // sendAggregatedData отправляет агрегированные данные
-func sendAggregatedData(ctx context.Context, aggregator *aggregation.WindowAggregator, kafkaProducer *kafka.KafkaProducer) {
+func sendAggregatedData(ctx context.Context, aggregator *aggregation.WindowAggregator, kafkaProducer *kafka.KafkaProducer, arrowClient *arrowflight.ArrowFlightClient) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -197,29 +220,14 @@ func sendAggregatedData(ctx context.Context, aggregator *aggregation.WindowAggre
 				}
 			}
 
-			// Также можно отправить через Arrow Flight (опционально)
-			sendViaArrowFlight(aggregated)
+			// Отправляем через Arrow Flight, если клиент доступен
+			if arrowClient != nil {
+				if err := arrowClient.SendAggregatedData(aggregated); err != nil {
+					log.Printf("Failed to send aggregated data via Arrow Flight: %v", err)
+				} else {
+					log.Printf("Successfully sent aggregated data via Arrow Flight")
+				}
+			}
 		}
-	}
-}
-
-// sendViaArrowFlight отправляет данные через Apache Arrow Flight
-func sendViaArrowFlight(data models.AggregatedData) {
-	// Проверяем, включена ли отправка через Arrow Flight
-	if os.Getenv("USE_ARROW_FLIGHT") == "false" {
-		return
-	}
-
-	serverAddr := os.Getenv("ARROW_FLIGHT_SERVER")
-	if serverAddr == "" {
-		serverAddr = fmt.Sprintf("localhost:%d", 8815)
-	}
-
-	// Используем функцию SendAggregatedData из пакета arrowflight
-	err := arrowflight.SendAggregatedData(data, serverAddr)
-	if err != nil {
-		log.Printf("Failed to send aggregated data via Arrow Flight: %v", err)
-	} else {
-		log.Printf("Successfully sent aggregated data via Arrow Flight to %s", serverAddr)
 	}
 }

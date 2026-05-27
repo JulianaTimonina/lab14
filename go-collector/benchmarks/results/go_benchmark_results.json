@@ -1,0 +1,10 @@
+{
+  "sliding_window": 0.000666,
+  "window_aggregation": {
+    "add_time_sec": 0.0007846,
+    "aggregation_time_sec": 0.1006276,
+    "memory_mb": 1.0227813720703125,
+    "readings_count": 10000,
+    "throughput_readings_per_sec": 12745347.94799898
+  }
+}

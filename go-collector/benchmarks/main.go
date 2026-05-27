@@ -8,8 +8,8 @@ import (
 	"runtime"
 	"time"
 
-	"../go-collector/internal/aggregation"
-	"../go-collector/pkg/models"
+	"energy-monitoring-system/go-collector/internal/aggregation"
+	"energy-monitoring-system/go-collector/pkg/models"
 )
 
 // generateTestReadings создаёт тестовые показания
@@ -121,8 +121,8 @@ func main() {
 	results["sliding_window"] = benchmarkSlidingWindow()
 
 	// Сохраняем результаты в JSON
-	outputFile := "results/go_benchmark_results.json"
-	os.MkdirAll("results", 0755)
+	outputFile := "benchmarks/results/go_benchmark_results.json"
+	os.MkdirAll("benchmarks/results", 0755)
 
 	file, err := os.Create(outputFile)
 	if err != nil {

@@ -22,7 +22,7 @@ import psycopg2
 from psycopg2.extras import execute_values
 
 from arrow_client import ArrowFlightClient
-from kafka_consumer import KafkaConsumer
+from kafka_consumer import KafkaConsumer, ProcessingStatus
 from window_processor import WindowProcessor
 
 # Настройка логирования
@@ -79,14 +79,18 @@ class EnergyProcessor:
             )
             logger.info(f"Arrow Flight server initialized on {arrow_server_host}:{arrow_server_port}")
         
-        # Инициализация Kafka потребителя
+        # Инициализация Kafka потребителя с гарантированной обработкой
         if self.config.get('kafka_enabled', True):
             self.kafka_consumer = KafkaConsumer(
                 bootstrap_servers=self.config.get('kafka_bootstrap_servers', 'localhost:9092'),
                 topics=self.config.get('kafka_topics', ['meter-readings-raw', 'meter-readings-aggregated']),
-                group_id=self.config.get('kafka_group_id', 'energy-processor')
+                group_id=self.config.get('kafka_group_id', 'energy-processor'),
+                enable_auto_commit=False,  # ручной коммит после обработки
+                max_retries=3,
+                dead_letter_topic='meter-readings-dead-letter'
             )
-            logger.info("Kafka consumer initialized")
+            await self.kafka_consumer.connect()
+            logger.info("Kafka consumer with guaranteed processing initialized and connected")
         
         # Инициализация оконного процессора
         self.window_processor = WindowProcessor(
@@ -202,27 +206,87 @@ class EnergyProcessor:
                 await asyncio.sleep(1)
     
     async def _receive_kafka_data(self):
-        """Получение данных через Kafka."""
-        logger.info("Starting Kafka data receiver")
+        """Получение данных через Kafka с гарантированной обработкой."""
+        logger.info("Starting Kafka data receiver with guaranteed processing")
+        
+        async def process_raw_message(kafka_message):
+            """Обработка сырого показания."""
+            try:
+                data = kafka_message.value
+                if not isinstance(data, dict):
+                    logger.warning(f"Invalid message format: {type(data)}")
+                    return ProcessingStatus.FAILURE
+                
+                # Валидация
+                if not self._validate_reading(data):
+                    logger.warning(f"Validation failed for message: {data}")
+                    return ProcessingStatus.FAILURE
+                
+                # Сохранение в базу данных
+                await self._save_raw_reading(data)
+                
+                # Добавление в оконный процессор
+                if self.window_processor:
+                    self.window_processor.add_reading(data)
+                
+                # Помещение в очередь для дальнейшей обработки (опционально)
+                await self.raw_data_queue.put({
+                    'meter_id': data.get('meter_id'),
+                    'timestamp': datetime.fromisoformat(data.get('timestamp')),
+                    'power': data.get('power'),
+                    'source': 'kafka'
+                })
+                
+                logger.debug(f"Successfully processed raw message from topic {kafka_message.topic}, offset {kafka_message.offset}")
+                return ProcessingStatus.SUCCESS
+                
+            except Exception as e:
+                logger.error(f"Error processing raw message: {e}")
+                return ProcessingStatus.RETRY
+        
+        async def process_aggregated_message(kafka_message):
+            """Обработка агрегированных данных."""
+            try:
+                data = kafka_message.value
+                if not isinstance(data, dict):
+                    logger.warning(f"Invalid aggregated message format: {type(data)}")
+                    return ProcessingStatus.FAILURE
+                
+                # Сохранение в базу данных
+                await self._save_aggregated_reading(data)
+                
+                # Помещение в очередь агрегированных данных
+                await self.aggregated_data_queue.put(data)
+                
+                logger.debug(f"Successfully processed aggregated message from topic {kafka_message.topic}, offset {kafka_message.offset}")
+                return ProcessingStatus.SUCCESS
+                
+            except Exception as e:
+                logger.error(f"Error processing aggregated message: {e}")
+                return ProcessingStatus.RETRY
+        
+        async def processing_callback(kafka_message):
+            """Асинхронный callback для обработки сообщения в зависимости от топика."""
+            if kafka_message.topic == 'meter-readings-raw':
+                return await process_raw_message(kafka_message)
+            elif kafka_message.topic == 'meter-readings-aggregated':
+                return await process_aggregated_message(kafka_message)
+            else:
+                logger.warning(f"Unknown topic: {kafka_message.topic}")
+                return ProcessingStatus.FAILURE
         
         while self.running:
             try:
-                # Получение сообщений из Kafka
-                messages = await self.kafka_consumer.consume()
-                
-                for message in messages:
-                    # Парсинг сообщения (предполагаем JSON формат)
-                    data = message.value
-                    if isinstance(data, dict):
-                        await self.raw_data_queue.put({
-                            'meter_id': data.get('meter_id'),
-                            'timestamp': datetime.fromisoformat(data.get('timestamp')),
-                            'power': data.get('power'),
-                            'source': 'kafka'
-                        })
+                # Используем consume_with_retry с асинхронным callback
+                processed = await self.kafka_consumer.consume_with_retry(
+                    processing_callback,
+                    timeout=1.0,
+                    batch_size=100
+                )
+                logger.debug(f"Processed {len(processed)} messages in this batch")
                 
             except Exception as e:
-                logger.error(f"Error receiving Kafka data: {e}")
+                logger.error(f"Error in Kafka receiver: {e}")
                 await asyncio.sleep(1)
     
     async def _process_raw_data(self):
