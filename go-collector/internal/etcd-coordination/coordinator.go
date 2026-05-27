@@ -18,14 +18,15 @@ const (
 
 // Coordinator управляет координацией сборщиков через etcd
 type Coordinator struct {
-	client     *clientv3.Client
+	client      *clientv3.Client
 	collectorID string
-	shards     []string
-	leaseID    clientv3.LeaseID
+	shards      []string
+	allShards   []string
+	leaseID     clientv3.LeaseID
 }
 
 // NewCoordinator создаёт новый координатор
-func NewCoordinator(endpoints []string, collectorID string) (*Coordinator, error) {
+func NewCoordinator(endpoints []string, collectorID string, allShards []string) (*Coordinator, error) {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints:   endpoints,
 		DialTimeout: 5 * time.Second,
@@ -35,9 +36,10 @@ func NewCoordinator(endpoints []string, collectorID string) (*Coordinator, error
 	}
 
 	return &Coordinator{
-		client:     cli,
+		client:      cli,
 		collectorID: collectorID,
-		shards:     make([]string, 0),
+		shards:      make([]string, 0),
+		allShards:   allShards,
 	}, nil
 }
 
@@ -100,6 +102,11 @@ func (c *Coordinator) GetAssignedShards() []string {
 	return c.shards
 }
 
+// SetAllShards устанавливает список всех шардов для перебалансировки
+func (c *Coordinator) SetAllShards(shards []string) {
+	c.allShards = shards
+}
+
 // WatchShardsChanges отслеживает изменения в назначении шардов
 func (c *Coordinator) WatchShardsChanges(ctx context.Context, callback func(shards []string)) error {
 	key := shardsPrefix + c.collectorID
@@ -143,7 +150,17 @@ func (c *Coordinator) DiscoverCollectors(ctx context.Context) ([]string, error) 
 }
 
 // RebalanceShards перераспределяет шарды между сборщиками
+// Если allShards пустой, используется внутренний список шардов (c.allShards)
 func (c *Coordinator) RebalanceShards(ctx context.Context, allShards []string) error {
+	// Если allShards не передан, используем внутренний список
+	shardsToBalance := allShards
+	if len(shardsToBalance) == 0 {
+		if len(c.allShards) == 0 {
+			return fmt.Errorf("no shards available for rebalancing")
+		}
+		shardsToBalance = c.allShards
+	}
+
 	collectors, err := c.DiscoverCollectors(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to discover collectors: %w", err)
@@ -154,8 +171,8 @@ func (c *Coordinator) RebalanceShards(ctx context.Context, allShards []string) e
 	}
 
 	// Простое распределение: round-robin
-	shardsPerCollector := len(allShards) / len(collectors)
-	remainder := len(allShards) % len(collectors)
+	shardsPerCollector := len(shardsToBalance) / len(collectors)
+	remainder := len(shardsToBalance) % len(collectors)
 
 	shardIndex := 0
 	for i, collectorID := range collectors {
@@ -165,15 +182,15 @@ func (c *Coordinator) RebalanceShards(ctx context.Context, allShards []string) e
 			end++
 		}
 
-		if start >= len(allShards) {
+		if start >= len(shardsToBalance) {
 			break
 		}
 
-		if end > len(allShards) {
-			end = len(allShards)
+		if end > len(shardsToBalance) {
+			end = len(shardsToBalance)
 		}
 
-		assignedShards := allShards[start:end]
+		assignedShards := shardsToBalance[start:end]
 		shardIndex = end
 
 		// Сохраняем назначение
@@ -189,7 +206,47 @@ func (c *Coordinator) RebalanceShards(ctx context.Context, allShards []string) e
 		}
 	}
 
-	log.Printf("Rebalanced %d shards among %d collectors", len(allShards), len(collectors))
+	log.Printf("Rebalanced %d shards among %d collectors", len(shardsToBalance), len(collectors))
+	return nil
+}
+
+// RebalanceShardsAuto автоматически перераспределяет шарды при изменении количества сборщиков
+func (c *Coordinator) RebalanceShardsAuto(ctx context.Context) error {
+	return c.RebalanceShards(ctx, nil)
+}
+
+// WatchCollectorsChanges отслеживает изменения в регистрации сборщиков и запускает перебалансировку
+func (c *Coordinator) WatchCollectorsChanges(ctx context.Context) error {
+	watchChan := c.client.Watch(ctx, collectorsPrefix, clientv3.WithPrefix())
+	
+	go func() {
+		for watchResp := range watchChan {
+			// Игнорируем события, если нет изменений
+			if len(watchResp.Events) == 0 {
+				continue
+			}
+			
+			// Логируем изменения
+			for _, event := range watchResp.Events {
+				collectorID := strings.TrimPrefix(string(event.Kv.Key), collectorsPrefix)
+				if event.Type == clientv3.EventTypePut {
+					log.Printf("Collector %s registered or updated", collectorID)
+				} else if event.Type == clientv3.EventTypeDelete {
+					log.Printf("Collector %s removed", collectorID)
+				}
+			}
+			
+			// Запускаем перебалансировку с задержкой, чтобы избежать частых перераспределений
+			time.Sleep(1 * time.Second)
+			
+			if err := c.RebalanceShardsAuto(ctx); err != nil {
+				log.Printf("Failed to auto-rebalance shards: %v", err)
+			} else {
+				log.Printf("Auto-rebalanced shards after collectors change")
+			}
+		}
+	}()
+	
 	return nil
 }
 

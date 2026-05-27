@@ -9,13 +9,16 @@ import (
 
 // SlidingWindowAggregator реализует скользящее окно агрегации
 type SlidingWindowAggregator struct {
-	windowSize   time.Duration
+	windowSize    time.Duration
 	slideInterval time.Duration
-	data         map[string]*windowData // meter_id -> windowData
-	mu           sync.RWMutex
-	outputChan   chan models.AggregatedData
-	stopChan     chan struct{}
-	lastSlide    time.Time
+	maxRecords    int // максимальное количество записей перед принудительным сдвигом (0 = отключено)
+	data          map[string]*windowData // meter_id -> windowData
+	totalRecords  int // общее количество записей во всех счётчиках
+	mu            sync.RWMutex
+	outputChan    chan models.AggregatedData
+	stopChan      chan struct{}
+	lastSlide     time.Time
+	forceSlideChan chan struct{} // канал для принудительного сдвига
 }
 
 // windowData содержит данные для одного счётчика в скользящем окне
@@ -37,14 +40,18 @@ type windowStats struct {
 }
 
 // NewSlidingWindowAggregator создаёт новый агрегатор скользящего окна
-func NewSlidingWindowAggregator(windowSize, slideInterval time.Duration) *SlidingWindowAggregator {
+// maxRecords: максимальное количество записей перед принудительным сдвигом (0 = отключено)
+func NewSlidingWindowAggregator(windowSize, slideInterval time.Duration, maxRecords int) *SlidingWindowAggregator {
 	swa := &SlidingWindowAggregator{
-		windowSize:   windowSize,
+		windowSize:    windowSize,
 		slideInterval: slideInterval,
-		data:         make(map[string]*windowData),
-		outputChan:   make(chan models.AggregatedData, 100),
-		stopChan:     make(chan struct{}),
-		lastSlide:    time.Now(),
+		maxRecords:    maxRecords,
+		data:          make(map[string]*windowData),
+		totalRecords:  0,
+		outputChan:    make(chan models.AggregatedData, 100),
+		stopChan:      make(chan struct{}),
+		lastSlide:     time.Now(),
+		forceSlideChan: make(chan struct{}, 1),
 	}
 
 	// Запускаем горутину для периодического сдвига окна
@@ -91,8 +98,21 @@ func (swa *SlidingWindowAggregator) AddReading(reading models.MeterReading) {
 		data.stats.max = power
 	}
 
+	// Увеличиваем общее количество записей
+	swa.totalRecords++
+
 	// Удаляем устаревшие показания (старше windowSize)
 	swa.cleanupOldReadings(data, timestamp)
+
+	// Проверяем лимит по количеству записей
+	if swa.maxRecords > 0 && swa.totalRecords >= swa.maxRecords {
+		select {
+		case swa.forceSlideChan <- struct{}{}:
+			// Сигнал отправлен
+		default:
+			// Канал уже заполнен, пропускаем
+		}
+	}
 }
 
 // cleanupOldReadings удаляет показания, выходящие за пределы окна
@@ -110,12 +130,18 @@ func (swa *SlidingWindowAggregator) cleanupOldReadings(data *windowData, current
 
 	if startIndex > 0 {
 		// Удаляем устаревшие показания и корректируем статистики
-		for i := 0; i < startIndex; i++ {
+		deletedCount := startIndex
+		for i := 0; i < deletedCount; i++ {
 			oldReading := data.readings[i]
 			data.stats.sum -= oldReading.power
 			data.stats.count--
 			// При удалении min/max нужно пересчитать, но для простоты оставим как есть
 			// В реальной системе лучше пересчитывать статистики периодически
+		}
+		// Уменьшаем общее количество записей
+		swa.totalRecords -= deletedCount
+		if swa.totalRecords < 0 {
+			swa.totalRecords = 0
 		}
 		data.readings = data.readings[startIndex:]
 	}
@@ -131,6 +157,9 @@ func (swa *SlidingWindowAggregator) slideTimer() {
 		case <-swa.stopChan:
 			return
 		case <-ticker.C:
+			swa.slideWindow()
+		case <-swa.forceSlideChan:
+			// Принудительный сдвиг по количеству записей
 			swa.slideWindow()
 		}
 	}
@@ -180,6 +209,11 @@ func (swa *SlidingWindowAggregator) slideWindow() {
 		// Успешно отправлено
 	default:
 		// Канал заполнен, пропускаем
+	}
+
+	// Сбрасываем счётчик записей, если включён лимит по количеству
+	if swa.maxRecords > 0 && swa.totalRecords >= swa.maxRecords {
+		swa.totalRecords = 0
 	}
 
 	swa.lastSlide = now

@@ -41,8 +41,11 @@ func main() {
 
 	log.Printf("Starting collector %s with transport=%s", collectorID, transport)
 
-	// Инициализируем координатор etcd
-	coordinator, err := etcdcoordination.NewCoordinator([]string{etcdEndpoints}, collectorID)
+	// Получаем список всех шардов (счётчиков)
+	allShards := generateAllShards(totalShards)
+
+	// Инициализируем координатор etcd с списком всех шардов
+	coordinator, err := etcdcoordination.NewCoordinator([]string{etcdEndpoints}, collectorID, allShards)
 	if err != nil {
 		log.Fatalf("Failed to create coordinator: %v", err)
 	}
@@ -56,11 +59,8 @@ func main() {
 		log.Fatalf("Failed to register collector: %v", err)
 	}
 
-	// Получаем список всех шардов (счётчиков)
-	allShards := generateAllShards(totalShards)
-
-	// Перераспределяем шарды между всеми сборщиками
-	if err := coordinator.RebalanceShards(ctx, allShards); err != nil {
+	// Перераспределяем шарды между всеми сборщиками (использует внутренний список)
+	if err := coordinator.RebalanceShards(ctx, nil); err != nil {
 		log.Printf("Warning: failed to rebalance shards: %v", err)
 	}
 
@@ -68,9 +68,11 @@ func main() {
 	assignedShards := coordinator.GetAssignedShards()
 	log.Printf("Assigned shards: %v", assignedShards)
 
-	// Создаём агрегатор окон
-	windowSize := 30 * time.Second
-	aggregator := aggregation.NewWindowAggregator(windowSize)
+	// Создаём агрегатор скользящего окна (5 минут) с триггером по времени (30 сек) и количеству записей (1000)
+	windowSize := 5 * time.Minute
+	slideInterval := 30 * time.Second
+	maxRecords := 1000
+	aggregator := aggregation.NewSlidingWindowAggregator(windowSize, slideInterval, maxRecords)
 
 	// Инициализируем транспорты в зависимости от флага
 	var kafkaProducer *kafka.KafkaProducer
@@ -107,6 +109,11 @@ func main() {
 
 	// Запускаем отправку агрегированных данных
 	go sendAggregatedData(ctx, aggregator, kafkaProducer, arrowClient)
+
+	// Отслеживаем изменения в регистрации сборщиков для автоматической перебалансировки
+	if err := coordinator.WatchCollectorsChanges(ctx); err != nil {
+		log.Printf("Warning: failed to watch collectors changes: %v", err)
+	}
 
 	// Отслеживаем изменения в назначении шардов
 	coordinator.WatchShardsChanges(ctx, func(shards []string) {
@@ -185,7 +192,7 @@ func fetchMeterReading(meterID string) (models.MeterReading, error) {
 }
 
 // processData обрабатывает сырые данные и добавляет их в агрегатор
-func processData(ctx context.Context, dataChan <-chan models.MeterReading, aggregator *aggregation.WindowAggregator) {
+func processData(ctx context.Context, dataChan <-chan models.MeterReading, aggregator *aggregation.SlidingWindowAggregator) {
 	for {
 		select {
 		case <-ctx.Done():
@@ -199,7 +206,7 @@ func processData(ctx context.Context, dataChan <-chan models.MeterReading, aggre
 }
 
 // sendAggregatedData отправляет агрегированные данные
-func sendAggregatedData(ctx context.Context, aggregator *aggregation.WindowAggregator, kafkaProducer *kafka.KafkaProducer, arrowClient *arrowflight.ArrowFlightClient) {
+func sendAggregatedData(ctx context.Context, aggregator *aggregation.SlidingWindowAggregator, kafkaProducer *kafka.KafkaProducer, arrowClient *arrowflight.ArrowFlightClient) {
 	for {
 		select {
 		case <-ctx.Done():
